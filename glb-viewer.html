@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GLB Viewer (Local)</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #111; color: #ddd; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans JP', sans-serif; }
+    .bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #1a1a1a; border-bottom: 1px solid #222; }
+    .bar input { flex: 1; padding: 6px 8px; background: #0f0f0f; color: #eee; border: 1px solid #333; border-radius: 6px; }
+    .bar button { padding: 6px 10px; background: #2a2a2a; color: #eee; border: 1px solid #333; border-radius: 6px; cursor: pointer; }
+    .wrap { position: absolute; inset: 48px 0 0 0; display: flex; }
+    model-viewer { width: 100%; height: 100%; }
+    .hint { padding: 8px 12px; font-size: 12px; color: #aaa; }
+  </style>
+  <script>
+    // Use local decoders (no CDN)
+    window.ModelViewerElement = window.ModelViewerElement || {};
+    window.ModelViewerElement.meshoptDecoderLocation = '/meshopt_decoder.js';
+    window.ModelViewerElement.dracoDecoderLocation = '/';
+  </script>
+  <script type="module" src="/assets/js/vendor/model-viewer.min.js"></script>
+</head>
+<body>
+  <div class="bar">
+    <span>GLB:</span>
+    <input id="src" placeholder="/relative/path/to/model.glb (from SCAN_PATH root)" />
+    <button id="load">Load</button>
+  </div>
+  <div class="wrap">
+    <model-viewer id="viewer" camera-controls auto-rotate exposure="1.0" style="background:#111"></model-viewer>
+  </div>
+  <div class="hint">Tips: pass ?src=path/to.glb or type the path and press Load. Files are served from SCAN_PATH.</div>
+  <script>
+    const input = document.getElementById('src');
+    const btn = document.getElementById('load');
+    const mv = document.getElementById('viewer');
+    const url = new URL(location.href);
+    const initial = url.searchParams.get('src');
+    if (initial) {
+      input.value = initial;
+      mv.src = initial;
+    }
+    btn.addEventListener('click', () => {
+      mv.src = input.value.trim();
+    });
+  </script>
+</body>
+</html>
+

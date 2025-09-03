@@ -1,0 +1,34 @@
+version: "3.8"
+services:
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12.0
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+    ports:
+      - "127.0.0.1:17700:7700"
+    volumes:
+      - meili_data:/data.ms
+
+  meilisearch-ui:
+    image: riccoxie/meilisearch-ui:latest
+    ports:
+      - "127.0.0.1:24900:24900"
+    environment:
+      - MEILISEARCH_URL=http://host.docker.internal:17700
+      - MEILISEARCH_API_KEY=${MEILI_MASTER_KEY}
+    depends_on:
+      - meilisearch
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "127.0.0.1:26333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+volumes:
+  meili_data:
+    name: media_gallery_analyzer_meili_data
+  qdrant_storage:
+    name: media_gallery_analyzer_qdrant_storage

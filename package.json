@@ -1,0 +1,29 @@
+{
+  "name": "media-gallery-analyzer",
+  "version": "1.0.0",
+  "description": "A dynamic media gallery analyzer with AI-powered analysis and semantic search",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "setup:models": "python setup_models.py",
+    "postinstall": "echo 'Run \"npm run setup:models\" to download AI models (recommended)'"
+  },
+  "keywords": [
+    "media",
+    "gallery",
+    "analyzer",
+    "ai-analysis",
+    "semantic-search"
+  ],
+  "author": "kz-kk",
+  "license": "MIT",
+  "dependencies": {
+    "jimp": "^0.22.10",
+    "meilisearch": "^0.52.0",
+    "multer": "^2.0.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

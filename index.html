@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Gallery Analyzer</title>
+    <link rel="stylesheet" href="/assets/css/style.css">
+    <!-- 3D viewer: model-viewer (local) -->
+    <script>
+      // Configure decoder locations to use local aliases at site root
+      window.ModelViewerElement = window.ModelViewerElement || {};
+      // Meshopt expects the non-module UMD decoder JS URL
+      window.ModelViewerElement.meshoptDecoderLocation = '/meshopt_decoder.js';
+      // Draco expects a directory; it will request draco_decoder.js / .wasm under this path
+      window.ModelViewerElement.dracoDecoderLocation = '/';
+      // If you use KTX2/Basis textures, uncomment the next line and vendor the transcoder
+      // window.ModelViewerElement.ktx2TranscoderLocation = '/';
+    </script>
+    <script type="module" src="/assets/js/vendor/model-viewer.min.js"></script>
+</head>
+<body>
+
+    <!-- サイドバー -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-title">Media Gallery Analyzer</div>
+            <div class="sidebar-subtitle" id="fileCount">Loading...</div>
+        </div>
+
+        <!-- 検索セクション -->
+        <div class="search-section">
+            <input type="text" class="search-input" id="searchInput" placeholder="画像を検索...">
+            <div class="search-options">
+                <div class="search-options-row">
+                    <label class="search-option">
+                        <input type="radio" name="searchType" value="fulltext" checked>
+                        全文検索
+                    </label>
+                    <label class="search-option">
+                        <input type="radio" name="searchType" value="semantic">
+                        セマンティック検索
+                    </label>
+                </div>
+                <div class="search-options-row">
+                    <label class="search-option">
+                        <input type="radio" name="searchType" value="filename">
+                        ファイル名検索
+                    </label>
+
+                </div>
+            </div>
+        </div>
+
+        <!-- フォルダツリー -->
+        <div class="folder-tree" id="folderTree">
+            <div class="loading">スキャン中...</div>
+        </div>
+
+        <!-- タグセクション -->
+        <div class="sidebar-tags">
+            <div class="tags-title">Quick Filters</div>
+            <div class="tag-list">
+                <span class="tag active" data-type="all">All</span>
+                <span class="tag" data-type="image">Images</span>
+                <span class="tag" data-type="video">Videos</span>
+                <span class="tag" data-type="audio">Audio</span>
+                <span class="tag" data-type="model">3D</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- メインコンテンツ -->
+    <div class="main-content">
+        <!-- ヘッダーバー -->
+        <div class="header-bar">
+            <!-- <input type="text" class="search-bar" placeholder="Search files..." id="searchInput"> -->
+            <div class="view-options">
+                <button class="view-btn active" data-view="grid">📱 Grid</button>
+                <button class="view-btn" data-view="list">📋 List</button>
+                <button class="view-btn" id="refreshBtn">🔄 Refresh</button>
+                <button class="view-btn" id="analyzeAllBtn">⚡ 画像全解析</button>
+                <button class="view-btn" id="analyzeAllVideosBtn">🎬 動画全解析</button>
+            </div>
+        </div>
+
+        <!-- ギャラリーコンテナ -->
+        <div class="gallery-container">
+            <div class="media-grid" id="mediaGrid">
+                <div class="loading">メディアファイルを読み込み中...</div>
+            </div>
+        </div>
+
+        <!-- 統計バー -->
+        <div class="stats-bar">
+            <span class="stats-info" id="statsInfo">Loading...</span>
+            <span style="margin-left: auto;" id="totalSize">Total: Calculating...</span>
+        </div>
+    </div>
+
+    <!-- ライトボックス -->
+    <div class="lightbox" id="lightbox">
+        <span class="close-btn" id="lightboxCloseBtn">&times;</span>
+        <div class="lightbox-content" id="lightboxContent"></div>
+    </div>
+
+    <!-- コンテキストメニュー -->
+    <div class="context-menu" id="contextMenu">
+        <div class="context-menu-item" id="ctxCopy">
+            <span>📋</span> ファイルパスをコピー
+        </div>
+        <div class="context-menu-item" id="ctxOpenFile">
+            <span>📂</span> ファイルを開く
+        </div>
+        <div class="context-menu-item" id="ctxOpenFolder">
+            <span>📁</span> フォルダを開く
+        </div>
+    </div>
+
+    <!-- モーダル -->
+    <div class="modal-overlay" id="analysisModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">画像解析結果</h3>
+                <button class="modal-close" id="analysisModalClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section">
+                    <label class="modal-label">キャプション</label>
+                    <div class="modal-value" id="modalCaption"></div>
+                </div>
+                <div class="modal-section">
+                    <label class="modal-label">タグ</label>
+                    <div id="modalTags" class="modal-tags"></div>
+                </div>
+                <div class="modal-section">
+                    <label class="modal-label">モデル</label>
+                    <div class="modal-value" id="modalModel"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts (ESM entry) -->
+    <script type="module" src="/assets/js/app.js"></script>
+</body>
+</html>
