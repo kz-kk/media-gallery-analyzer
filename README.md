@@ -53,23 +53,27 @@ cp .env.example .env
 
 ### 2. 依存関係のインストール
 
+#### Node.js依存関係インストール
 ```bash
-# Node.js依存関係（Node 18 以上を推奨）
+# （Node 18 以上を推奨）
 npm install
+```
 
-# Python依存関係（CairoSVG含む）
+#### 仮想環境にてPython依存関係インストール
+```bash
+# Mac 
 python -m venv venv
-
-# mac
 source venv/bin/activate  
 
 # Windows Gitbash 
+python3 -m venv venv
 . venv/Scripts/activate
 
-pip install -r requirements.txt
+# 依存関係install
+(venv) pip install -r requirements.txt
 
 # AIモデル(whisper・plamo)のダウンロード
-python setup_models.py
+(venv) python setup_models.py
 ```
 
 ### 3. 環境設定
@@ -79,35 +83,43 @@ python setup_models.py
 ```bash
 # 必須: メディアディレクトリのパスを設定
 SCAN_PATH=/path/to/your/media/directory
+# 仮想環境
 PYTHON_VENV_PATH=./venv/bin/python
 
-# オプション: 必要に応じて他の設定を調整
-PORT=3333
+# 例 Mac
+# SCAN_PATH=/Users/example/media
+
+# 例 windows Gitbash
+# SCAN_PATH=C:\Users\example\media
+
+# LMStudioのAPI受付URL 
+# API設定タブ > Settings > Serve on Local NetworkをOff
 LMSTUDIO_URL=http://127.0.0.1:1234
-# 解析スクリプト（既定: 音声は v2/Whisper）
-AUDIO_INDEXER_SCRIPT=audio_indexer_v2.py
-# IDスキーム（既定 rel8 = 相対パスsha256先頭8hex→int）
-ID_SCHEME=rel8
+
 ```
 
 
 ### 4. サービスの開始
 
 ```bash
-# MeilisearchとQdrantを開始
-docker-compose up -d
+# Docker Desktopを起動後実行 MeilisearchとQdrantを開始
+docker compose up -d
 
-# アプリケーションを開始
+# LMStudioであらかじめマルチモーダルのqwen2.5-vl-7bをダウンロードして使えるようにして起動しておく
+
+# アプリケーションを起動
+# http://127.0.0.1:3333/
 npm start
 ```
 
 
 ### 5. アプリケーションへのアクセス（ローカル）
+基本はギャラリーUIにのみアクセス
 
 | 名称 | URL | ポート/ENV | 説明 |
 |------|-----|-----------|------|
 | ギャラリーUI | http://127.0.0.1:3333 | `PORT=3333` | 本アプリのフロントエンド |
-| Meilisearch 管理画面UI | http://127.0.0.1:24900 | 固定 24900 | 公式UI（`docker-compose`で起動） |
+| Meilisearch 管理画面UI | http://127.0.0.1:24900 | 固定 24900 | 公式UI（`docker compose`で起動） |
 | Meilisearch API | http://127.0.0.1:17700 | 固定 17700 → コンテナ内7700 | 検索エンジンAPI（`MEILI_URL`） |
 | Qdrant ダッシュボード | http://127.0.0.1:26333/dashboard | 固定 26333 → コンテナ内6333 | ベクトルDBダッシュボード |
 
@@ -192,12 +204,7 @@ ffmpeg -version
   - 解析ボタンはホバー時に表示（タッチ端末では常時表示）
   - サムネ未生成のときは「スナップショット生成中…」、続いて「解析中…」のローディングが表示され、解析モーダルが出たらローディングは消えます
 
-## UI表示ポリシー（音声）
-
-- 通常一覧では音声のcaption/tagsは非表示。カードをクリックして拡大表示（ライトボックス）した右側で詳細を確認できます。
-- 検索結果ではcaption/tagsを表示し、内容で探しやすくします。
-
 ## 謝辞
 
-- 本プロジェクトは以下のOSSを参考にしています。
+- 本プロジェクトは以下のOSSを元にしています。
   - media-gallery-viewer (by dai-motoki): https://github.com/dai-motoki/media-gallery-viewer

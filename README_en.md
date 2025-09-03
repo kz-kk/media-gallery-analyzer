@@ -18,10 +18,11 @@ A powerful media gallery viewer with AI-powered analysis, full-text search, and 
 
 ## Prerequisites
 
-- Node.js (>=14.0.0)
+- Node.js (>=18)
 - Python 3.11+
 - Docker & Docker Compose (Docker Desktop https://docs.docker.com/desktop/setup/install/mac-install/)
 - FFmpeg (for video processing)
+- LM Studio (>=0.3.24)
 
 ## Quick Start
 
@@ -57,9 +58,6 @@ ID_SCHEME=rel8
 npm install
 
 # Python dependencies (includes CairoSVG)
-python -m venv venv
-
-# Python
 python -m venv venv
 
 # mac
@@ -121,7 +119,8 @@ When first using the Meilisearch admin interface (http://127.0.0.1:24900), conne
 1. Download and install [LM Studio](https://lmstudio.ai/)
 2. Load a vision model (e.g., `qwen2.5-vl-7b`)
 3. Start the local server on port 1234
-4. Update `LMSTUDIO_MODEL` in `.env` if using different model
+4. Ensure "Serve on Local Network" is OFF (use 127.0.0.1)
+5. Update `LMSTUDIO_MODEL` in `.env` if using different model
 
 Notes:
 - Image analysis: VLM (e.g., qwen2.5-vl-7b)
@@ -143,7 +142,7 @@ Notes:
 
 - **Images**: JPG, PNG, GIF, BMP, WebP, SVG (SVG is rasterized before analysis)
 - **Videos**: MP4, AVI, MOV, MKV, WebM, M4V, MPG, MPEG
-- **Audio**: MP3, WAV, FLAC, AAC
+- **Audio**: MP3, WAV, OGG, FLAC, M4A
 
 ## Development
 
