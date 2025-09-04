@@ -146,6 +146,16 @@ Meilisearch管理画面（http://127.0.0.1:24900）を初回利用時は、以�
 | `QDRANT_URL` | http://127.0.0.1:26333 | Qdrant API URL |
 | `EMB_MODEL` | all-MiniLM-L6-v2 | 埋め込みモデル（Plamo使用可）|
 | `WHISPER_MODEL` | small | Whisper音声認識モデル |
+| `WHISPER_LANGUAGE` | (auto) | Whisperへの言語ヒント（例: `ja`, `en`。未設定で自動検出）|
+| `WHISPER_FORCE_LANGUAGE` | (unset) | 言語を完全に固定（例: `ja`）。歌唱で言語誤検出が起きる場合に有効 |
+| `WHISPER_FORCE_MODE` | prefer | `always`=常に強制, `prefer`=自動検出を優先（高確度で別言語なら強制解除）, `off`=強制無効 |
+| `WHISPER_FORCE_THRESHOLD` | 0.75 | 強制解除のしきい値（検出言語確度）。`prefer`モード時のみ使用 |
+| `WHISPER_INITIAL_PROMPT` | (unset) | 文字起こしの初期プロンプト。例: 日本語歌詞を日本語で書き起こす旨 |
+| `WHISPER_TEMPERATURE` | 0 | デコード温度（例: `0` または `0,0.2,0.4` のフォールバック列）|
+| `WHISPER_BEAM_SIZE` | 5 | ビームサーチ幅（空なら未指定）|
+| `WHISPER_CONDITION_ON_PREV` | 0 | 1で前文脈に条件付け（長尺会話向け）。歌詞での暴走防止には0推奨 |
+| `ALLOW_TRANSLATION` | 0 | `1` かつ `WHISPER_TASK=translate` の時のみ翻訳を有効化。既定では原文そのままを文字起こし |
+| `CAPTION_SNIPPET_CHARS` | 200 | Whisperのキャプション抜粋の最大文字数（全文は使わず抜粋のみ） |
 | `AUDIO_INDEXER_SCRIPT` | audio_indexer_v2.py | 音声解析スクリプト |
 | `ID_SCHEME` | rel8 | メディアID方式（rel8/rel16/abs8）|
 
@@ -161,6 +171,9 @@ Meilisearch管理画面（http://127.0.0.1:24900）を初回利用時は、以�
 補足:
 - 画像解析: LM Studioのビジョンモデル（例: qwen2.5-vl-7b）を使用
 - 音声解析(v2): Whisperで文字起こし＋特徴量解析。LM Studioはテキスト整形補助（任意）
+- 文字起こし: 既定で原文言語のまま返します（日本語は日本語、英語は英語）。翻訳したい場合は `ALLOW_TRANSLATION=1` とし、合わせて `WHISPER_TASK=translate` を指定してください。
+  - 歌唱で英語に化ける場合は、`WHISPER_FORCE_LANGUAGE=ja` を設定し、必要に応じて `WHISPER_INITIAL_PROMPT="日本語の歌詞をそのまま日本語で書き起こしてください。翻訳しない。"` を追加してください。モデルは `WHISPER_MODEL=medium` 以上を推奨。
+- キャプション合成方針: まず Whisper の全文をキャプション先頭に採用。その後、音源が「楽曲」の場合のみ、楽曲解析（テンポ/ムード/楽器/カテゴリ等）の概要を追記します。会話の場合は楽曲解析やLMの整形は行いません。
 - SVGロゴ: CairoSVGで白/黒背景にラスタライズした2枚をVLMに送信して誤判定（白黒反転やスピナー扱い）を抑制
 
 ## 使用方法

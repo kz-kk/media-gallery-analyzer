@@ -186,7 +186,8 @@ function analyzeImageFile(filePath) {
                 PYTHONPYCACHEPREFIX: path.join(__dirname, process.env.PYTHON_CACHE_DIR || 'analysis/__pycache__'),
                 TRANSFORMERS_NO_TF: '1',
                 TF_CPP_MIN_LOG_LEVEL: '2',
-                PYTHONIOENCODING: 'utf-8'
+                PYTHONIOENCODING: 'utf-8',
+                PYTHONUNBUFFERED: '1'
             }
         });
         
@@ -284,7 +285,8 @@ function analyzeAudioFile(filePath) {
             // Hugging Faceのキャッシュディレクトリを明示的に指定
             HF_HOME: process.env.HF_HOME || path.join(require('os').homedir(), '.cache', 'huggingface'),
             // マルチプロセッシングの設定
-            TOKENIZERS_PARALLELISM: 'false'
+            TOKENIZERS_PARALLELISM: 'false',
+            PYTHONUNBUFFERED: '1'
         };
         if (process.env.NO_HF_DOWNLOAD === '1' && /audio_indexer_v2\.py$/i.test(audioScript)) {
             childEnv.EMB_MODEL = 'sentence-transformers/all-MiniLM-L6-v2';
@@ -372,7 +374,8 @@ function analyzeVideoFile(filePath) {
                 TRANSFORMERS_NO_TF: '1',
                 TF_CPP_MIN_LOG_LEVEL: '2',
                 PYTHONWARNINGS: 'ignore:::tensorflow',
-                PYTHONIOENCODING: 'utf-8'
+                PYTHONIOENCODING: 'utf-8',
+                PYTHONUNBUFFERED: '1'
             }
         });
         
@@ -482,7 +485,13 @@ async function searchWithQdrant(query, limit = 20) {
         async function embedWithModel(modelName) {
             return new Promise((resolve, reject) => {
                 const args = [embeddingScript, query];
-                const env = { ...process.env, EMB_MODEL: modelName, PYTHONPYCACHEPREFIX: path.join(__dirname, process.env.PYTHON_CACHE_DIR || 'analysis/__pycache__'), PYTHONIOENCODING: 'utf-8' };
+                const env = { 
+                    ...process.env, 
+                    EMB_MODEL: modelName, 
+                    PYTHONPYCACHEPREFIX: path.join(__dirname, process.env.PYTHON_CACHE_DIR || 'analysis/__pycache__'), 
+                    PYTHONIOENCODING: 'utf-8',
+                    PYTHONUNBUFFERED: '1'
+                };
                 const child = spawn(venvPython, args, { stdio: 'pipe', env });
                 let stdout = '', stderr = '';
                 child.stdout.on('data', d => stdout += d.toString());

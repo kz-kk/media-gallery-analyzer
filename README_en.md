@@ -111,6 +111,16 @@ When first using the Meilisearch admin interface (http://127.0.0.1:24900), conne
 | `QDRANT_URL` | http://127.0.0.1:26333 | Qdrant API URL |
 | `EMB_MODEL` | all-MiniLM-L6-v2 | Embedding model (Plamo also supported) |
 | `WHISPER_MODEL` | small | Whisper speech model |
+| `WHISPER_LANGUAGE` | (auto) | Optional language hint for Whisper (e.g., `ja`, `en`) |
+| `WHISPER_FORCE_LANGUAGE` | (unset) | Hard-lock language (e.g., `ja`). Useful when singing confuses detection |
+| `WHISPER_FORCE_MODE` | prefer | `always`=always force, `prefer`=prefer auto-detection (override force if high-confidence different language), `off`=disable forcing |
+| `WHISPER_FORCE_THRESHOLD` | 0.75 | Confidence threshold to override the force in `prefer` mode |
+| `WHISPER_INITIAL_PROMPT` | (unset) | Initial prompt to bias transcription (e.g., keep Japanese lyrics in Japanese) |
+| `WHISPER_TEMPERATURE` | 0 | Decoding temperature, supports fallback list like `0,0.2,0.4` |
+| `WHISPER_BEAM_SIZE` | 5 | Beam search width (omit to leave default) |
+| `WHISPER_CONDITION_ON_PREV` | 0 | If `1`, condition on previous text. For lyrics, `0` helps prevent drift |
+| `ALLOW_TRANSLATION` | 0 | If `1` and `WHISPER_TASK=translate`, Whisper outputs translated text; otherwise always transcribes in original language |
+| `CAPTION_SNIPPET_CHARS` | 200 | Max characters for the Whisper caption snippet (we use snippet, not the full transcript) |
 | `AUDIO_INDEXER_SCRIPT` | audio_indexer_v2.py | Audio analysis script |
 | `ID_SCHEME` | rel8 | Media ID scheme (rel8/rel16/abs8) |
 
@@ -125,6 +135,9 @@ When first using the Meilisearch admin interface (http://127.0.0.1:24900), conne
 Notes:
 - Image analysis: VLM (e.g., qwen2.5-vl-7b)
 - Audio analysis (v2): Whisper for transcription + features; LM Studio is optional for text enrichment
+- Transcription: By default, lyrics/speech are returned in the original language (Japanese stays Japanese, English stays English). To force translation, set `ALLOW_TRANSLATION=1` and `WHISPER_TASK=translate`.
+  - If singing gets misdetected and produces English gibberish, set `WHISPER_FORCE_LANGUAGE=ja` and optionally `WHISPER_INITIAL_PROMPT="Transcribe the Japanese lyrics in Japanese without translating."`. Also consider `WHISPER_MODEL=medium` or `large-v3` for better accuracy.
+- Caption pipeline: Always place the full Whisper transcript at the beginning of the caption. Only when the audio is classified as music, append the music analysis summary (tempo/mood/instruments/category). For speech, we do not apply music analysis or LLM enrichment.
 - SVG logos: Two-background rasterization (white/black) via CairoSVG to avoid inverted color or spinner misclassification
 
 ## Usage

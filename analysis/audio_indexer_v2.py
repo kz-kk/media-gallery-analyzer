@@ -292,10 +292,35 @@ def index_to_meilisearch(media_id: str, audio_analysis: Dict, lm_analysis: Optio
     url = f"{MEILI_URL}/indexes/{MEILI_INDEX}/documents"
     
     # 基本情報
+    # キャプションは基本的に解析側の description を使うが、
+    # 会話の場合は Whisper の全文を優先して使う。
+    caption = audio_analysis.get("description") or ""
+    try:
+        atype = (audio_analysis.get("features") or {}).get("audio_type")
+        tr_snippet = (audio_analysis.get("lyrics_snippet") or "").strip()
+        if not tr_snippet:
+            # フォールバック: text から短縮
+            tr_full = ((audio_analysis.get("transcription") or {}).get("text") or "").strip()
+            if tr_full:
+                tr_snippet = (tr_full[:200] + '…') if len(tr_full) > 200 else tr_full
+        # 1) Whisperスニペットを先頭に配置
+        if tr_snippet:
+            # 既に description 先頭に同一抜粋が入っていれば重複を避ける
+            if not caption.startswith(tr_snippet):
+                sep = '\n' if caption else ''
+                caption = f"{tr_snippet}{sep}{caption}" if caption else tr_snippet
+        # 2) 楽曲ではLMの詳細説明を末尾に結合（あれば）
+        if lm_analysis and lm_analysis.get('improved_description') and atype != 'speech':
+            improved = lm_analysis.get('improved_description')
+            if improved and improved not in caption:
+                caption = f"{caption} {improved}" if caption else improved
+    except Exception:
+        pass
+
     doc = {
         "id": media_id,
         "path": _rel_path(audio_analysis["file_path"]),
-        "caption": audio_analysis["description"],
+        "caption": caption,
         "tags": audio_analysis["tags"],
         "instruments": audio_analysis.get("instruments", []),
         "type": "audio",
@@ -357,7 +382,21 @@ def index_to_qdrant(media_id: str, audio_analysis: Dict, embedding_model: Any,
     client = QdrantClient(QDRANT_URL)
     
     # エンベディング用テキスト構築
-    text_parts = [audio_analysis["description"]]
+    # キャプション/埋め込み用テキストの構築
+    # 会話の場合は Whisper の全文を優先
+    atype = (audio_analysis.get("features") or {}).get("audio_type")
+    base_caption = audio_analysis.get("description") or ""
+    tr_snippet = (audio_analysis.get("lyrics_snippet") or "").strip()
+    if not tr_snippet:
+        tr_full = ((audio_analysis.get("transcription") or {}).get("text") or "").strip()
+        if tr_full:
+            tr_snippet = (tr_full[:200] + '…') if len(tr_full) > 200 else tr_full
+    # Whisper スニペットを常に先頭に合成
+    if tr_snippet:
+        if not (base_caption and base_caption.startswith(tr_snippet)):
+            sep = '\n' if base_caption else ''
+            base_caption = f"{tr_snippet}{sep}{base_caption}" if base_caption else tr_snippet
+    text_parts = [base_caption]
     text_parts.extend(audio_analysis["tags"])
     if audio_analysis.get("instruments"):
         text_parts.extend(audio_analysis["instruments"])
@@ -365,9 +404,12 @@ def index_to_qdrant(media_id: str, audio_analysis: Dict, embedding_model: Any,
     if audio_analysis.get("transcription"):
         text_parts.append(audio_analysis["transcription"]["text"][:500])
     
-    if lm_analysis and (audio_analysis.get("features", {}).get("audio_type") != 'speech'):
-        text_parts.append(lm_analysis.get("improved_description", ""))
-        text_parts.extend(lm_analysis.get("additional_tags", []))
+    if lm_analysis and (atype != 'speech'):
+        if lm_analysis.get("improved_description"):
+            text_parts.append(lm_analysis.get("improved_description", ""))
+        addt = lm_analysis.get("additional_tags", [])
+        if isinstance(addt, list):
+            text_parts.extend(addt)
     
     text = " ".join(text_parts)
     
