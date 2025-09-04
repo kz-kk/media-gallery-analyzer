@@ -67,7 +67,8 @@ MEILI_INDEX = os.getenv("MEILI_INDEX", "media")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:26333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "media_vectors")
 
-EMB_MODEL = os.getenv("EMB_MODEL", "all-MiniLM-L6-v2")
+# 事前取得を前提にPlamoを既定に（未取得/不可時は環境変数で上書き推奨）
+EMB_MODEL = os.getenv("EMB_MODEL", "pfnet/plamo-embedding-1b")
 
 DEFAULT_TIMEOUT = 300
 
@@ -323,7 +324,7 @@ def index_to_meilisearch(media_id: str, audio_analysis: Dict, lm_analysis: Optio
     
     # LM Studio分析結果
     if lm_analysis and (audio_analysis.get("features", {}).get("audio_type") != 'speech'):
-        doc["caption"] = lm_analysis.get("improved_description", doc["caption"])
+        # Whisperの内容はLLMに渡していないため、captionは維持し、タグ/補助情報のみ追加
         additional_tags = lm_analysis.get("additional_tags", [])
         if isinstance(additional_tags, list):
             doc["tags"] = list(set(doc["tags"] + additional_tags))
@@ -404,7 +405,7 @@ def index_to_qdrant(media_id: str, audio_analysis: Dict, embedding_model: Any,
         pass
     
     if lm_analysis:
-        payload["caption"] = lm_analysis.get("improved_description", payload["caption"])
+        # captionは維持。LLM由来の追加タグ/メタのみ付与
         addt = lm_analysis.get("additional_tags", [])
         if isinstance(addt, list):
             payload["tags"] = list(set(payload["tags"] + addt))
@@ -437,7 +438,9 @@ def index_to_qdrant(media_id: str, audio_analysis: Dict, embedding_model: Any,
 # ----------------- メイン処理 -----------------
 def process_single_audio(audio_path: Path, embedding_model: Any,
                         use_lm_studio: bool = True, use_whisper: bool = True,
-                        whisper_model: str = "base", collection_name: str = QDRANT_COLLECTION):
+                        whisper_model: str = "base", collection_name: str = QDRANT_COLLECTION,
+                        whisper_max_seconds: Optional[float] = None,
+                        whisper_offset_seconds: float = 0.0):
     """単一の音声ファイルを処理"""
     safe_debug_print(f"\n{'='*60}")
     safe_debug_print(f"処理中: {audio_path}")
@@ -446,7 +449,9 @@ def process_single_audio(audio_path: Path, embedding_model: Any,
     audio_analysis = analyze_audio_comprehensive(
         audio_path, 
         use_whisper=use_whisper,
-        whisper_model=whisper_model
+        whisper_model=whisper_model,
+        whisper_max_seconds=whisper_max_seconds,
+        whisper_offset_seconds=whisper_offset_seconds,
     )
     
     if not audio_analysis or not audio_analysis.get("features"):
@@ -459,14 +464,11 @@ def process_single_audio(audio_path: Path, embedding_model: Any,
     const_features = audio_analysis.get("features") or {}
     const_audio_type = const_features.get("audio_type")
     if use_lm_studio and const_audio_type not in ('speech', 'sfx'):
-        transcription_text = None
-        if audio_analysis.get("transcription"):
-            transcription_text = audio_analysis["transcription"]["text"]
-            
+        # Whisper内容はLLMに渡さない（楽曲側の特徴に限定）
         lm_analysis = analyze_features_with_lmstudio(
-            audio_analysis["description"],
+            audio_analysis.get("music_description") or audio_analysis["description"],
             audio_analysis["tags"],
-            transcription_text,
+            None,
             features=audio_analysis.get("features")
         )
     
@@ -494,7 +496,7 @@ def process_single_audio(audio_path: Path, embedding_model: Any,
     result = {
         "success": True,
         "file_name": audio_path.name,
-        "caption": lm_analysis.get("improved_description", audio_analysis["description"]) if lm_analysis else audio_analysis["description"],
+        "caption": audio_analysis["description"],
         "tags": list(set(audio_analysis["tags"] + lm_analysis.get("additional_tags", []))) if lm_analysis else audio_analysis["tags"],
         "media_id": media_id,
         "has_transcription": bool(audio_analysis.get("transcription")),
@@ -558,6 +560,10 @@ def main():
                       help="Whisperモデルサイズ (デフォルト: base)")
     parser.add_argument("--embedding_model", type=str, default=EMB_MODEL,
                       help=f"エンベディングモデル (デフォルト: {EMB_MODEL})")
+    parser.add_argument("--whisper-max-seconds", type=float, default=float(os.getenv('WHISPER_MAX_SECONDS') or 0.0),
+                      help="Whisperで文字起こしする最大秒数（0で無制限）")
+    parser.add_argument("--whisper-offset-seconds", type=float, default=float(os.getenv('WHISPER_OFFSET_SECONDS') or 0.0),
+                      help="Whisperで部分文字起こしを行う開始オフセット秒")
     
     args = parser.parse_args()
     
@@ -609,7 +615,9 @@ def main():
     kwargs = {
         "use_lm_studio": not args.no_lm_studio,
         "use_whisper": not args.no_whisper,
-        "whisper_model": args.whisper_model
+        "whisper_model": args.whisper_model,
+        "whisper_max_seconds": (args.whisper_max_seconds if args.whisper_max_seconds and args.whisper_max_seconds > 0 else None),
+        "whisper_offset_seconds": (args.whisper_offset_seconds or 0.0),
     }
     
     # 処理実行

@@ -15,10 +15,17 @@ export async function analyzeImage(filePath, buttonEl = null) {
     button.style.background = '#ff6b35';
     button.style.animation = 'pulse 1s infinite';
 
-    // メディアアイテム全体にオーバーレイ表示
+    // メディアアイテム全体にオーバーレイ表示 + ミニ進捗
     const overlay = document.createElement('div');
     overlay.className = 'analysis-overlay';
-    overlay.innerHTML = '<div class="analysis-spinner"></div><div>画像解析中...</div>';
+    overlay.innerHTML = '<div class="analysis-spinner"></div>';
+    const mini = document.createElement('div');
+    mini.style.cssText = 'position:absolute;left:8px;right:8px;bottom:8px;background:rgba(0,0,0,0.55);padding:6px 8px;border-radius:6px;color:#fff;font-size:10px;line-height:1.2;';
+    mini.innerHTML = '<div>画像解析中...</div><div style="margin-top:4px;height:6px;background:#333;border-radius:4px;overflow:hidden;"><div class="mini-bar" style="width:0%;height:100%;background:#58c66f;transition:width 0.3s ease"></div></div>';
+    overlay.appendChild(mini);
+    // 擬似進捗（最大90%まで）
+    let pImg=0; const imgTimer = setInterval(()=>{ pImg=Math.min(90, pImg+5); const bar=mini.querySelector('.mini-bar'); if(bar) bar.style.width=pImg+'%'; }, 600);
+    overlay.dataset.progressTimer = 'img';
     mediaItem.style.position = 'relative';
     mediaItem.appendChild(overlay);
 
@@ -103,7 +110,11 @@ export async function analyzeImage(filePath, buttonEl = null) {
 
         // オーバーレイを削除
         const overlay = mediaItem.querySelector('.analysis-overlay');
-        if (overlay) overlay.remove();
+        if (overlay) {
+            const bar = overlay.querySelector('.mini-bar'); if (bar) bar.style.width = '100%';
+            if (overlay.dataset.progressTimer === 'img') clearInterval(imgTimer);
+            setTimeout(()=>overlay.remove(), 350);
+        }
     }
 }
 
@@ -120,10 +131,17 @@ export async function analyzeVideo(filePath, buttonEl = null) {
     button.style.background = '#ff6b35';
     button.style.animation = 'pulse 1s infinite';
 
-    // メディアアイテム全体にオーバーレイ表示
+    // メディアアイテム全体にオーバーレイ表示 + ミニ進捗
     const overlay = document.createElement('div');
     overlay.className = 'analysis-overlay';
-    overlay.innerHTML = '<div class="analysis-spinner"></div><div>動画解析中...</div>';
+    overlay.innerHTML = '<div class="analysis-spinner"></div>';
+    const mini = document.createElement('div');
+    mini.style.cssText = 'position:absolute;left:8px;right:8px;bottom:8px;background:rgba(0,0,0,0.55);padding:6px 8px;border-radius:6px;color:#fff;font-size:10px;line-height:1.2;';
+    mini.innerHTML = '<div>動画解析中...</div><div style="margin-top:4px;height:6px;background:#333;border-radius:4px;overflow:hidden;"><div class="mini-bar" style="width:0%;height:100%;background:#58c66f;transition:width 0.3s ease"></div></div>';
+    overlay.appendChild(mini);
+    // 擬似進捗（最大90%まで）
+    let pVid=0; const vidTimer = setInterval(()=>{ pVid=Math.min(90, pVid+3); const bar=mini.querySelector('.mini-bar'); if(bar) bar.style.width=pVid+'%'; }, 600);
+    overlay.dataset.progressTimer = 'vid';
     mediaItem.style.position = 'relative';
     mediaItem.appendChild(overlay);
 
@@ -169,7 +187,11 @@ export async function analyzeVideo(filePath, buttonEl = null) {
 
         // オーバーレイを削除
         const overlay = mediaItem.querySelector('.analysis-overlay');
-        if (overlay) overlay.remove();
+        if (overlay) {
+            const bar = overlay.querySelector('.mini-bar'); if (bar) bar.style.width = '100%';
+            if (overlay.dataset.progressTimer === 'vid') clearInterval(vidTimer);
+            setTimeout(()=>overlay.remove(), 350);
+        }
     }
 }
 
@@ -186,12 +208,41 @@ export async function analyzeAudio(filePath, buttonEl = null) {
     button.style.background = '#ff6b35';
     button.style.animation = 'pulse 1s infinite';
 
-    // メディアアイテム全体にオーバーレイ表示
+    // メディアアイテム全体にオーバーレイ表示 + ミニ進捗（10px, 2行）
     const overlay = document.createElement('div');
     overlay.className = 'analysis-overlay';
-    overlay.innerHTML = '<div class="analysis-spinner"></div><div>音声解析中...</div>';
+    overlay.innerHTML = '<div class="analysis-spinner"></div>';
+    const mini = document.createElement('div');
+    mini.style.cssText = 'position:absolute;left:8px;right:8px;bottom:8px;background:rgba(0,0,0,0.55);padding:6px 8px;border-radius:6px;color:#fff;font-size:10px;line-height:1.2;';
+    mini.innerHTML = '<div>音声解析中...</div><div style="margin-top:4px;height:6px;background:#333;border-radius:4px;overflow:hidden;"><div class="mini-bar" style="width:0%;height:100%;background:#58c66f;transition:width 0.3s ease"></div></div>';
+    overlay.appendChild(mini);
+    let pAud=0; const audTimer = setInterval(()=>{ pAud=Math.min(90, pAud+2); const bar=mini.querySelector('.mini-bar'); if(bar) bar.style.width=pAud+'%'; }, 600);
+    overlay.dataset.progressTimer = 'aud';
     mediaItem.style.position = 'relative';
     mediaItem.appendChild(overlay);
+
+    // SSEで実測進捗を反映
+    let es = null;
+    try {
+        es = new EventSource(`${apiBaseUrl}/api/progress?path=${encodeURIComponent(filePath)}&type=audio`);
+        es.onmessage = (ev) => {
+            try {
+                const data = JSON.parse(ev.data || '{}');
+                const bar = mini.querySelector('.mini-bar');
+                if (!bar) return;
+                // features(40%) + whisper(60%) の重み付け進捗
+                const f = typeof data.featuresPct === 'number' ? data.featuresPct : 0;
+                const w = typeof data.whisperPct === 'number' ? data.whisperPct : 0;
+                let pct = 0;
+                if (f || w) pct = Math.min(100, Math.round((f * 0.4) + (w * 0.6)));
+                if (pct > pAud) pAud = pct;
+                bar.style.width = `${pAud}%`;
+                if (data.done) {
+                    setTimeout(() => { bar.style.width = '100%'; }, 100);
+                }
+            } catch (_) {}
+        };
+    } catch (e) {}
 
     try {
         const response = await fetch(`${apiBaseUrl}/api/analyze-audio`, {
@@ -234,7 +285,12 @@ export async function analyzeAudio(filePath, buttonEl = null) {
 
         // オーバーレイを削除
         const overlay = mediaItem.querySelector('.analysis-overlay');
-        if (overlay) overlay.remove();
+        if (overlay) {
+            const bar = overlay.querySelector('.mini-bar'); if (bar) bar.style.width = '100%';
+            if (overlay.dataset.progressTimer === 'aud') clearInterval(audTimer);
+            try { if (es) es.close(); } catch (_) {}
+            setTimeout(()=>overlay.remove(), 350);
+        }
     }
 }
 

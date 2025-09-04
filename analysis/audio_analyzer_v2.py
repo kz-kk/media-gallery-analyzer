@@ -8,6 +8,7 @@ audio_analyzer_v2.py
 - Meilisearch/Qdrantに保存
 """
 import librosa
+import ffmpeg
 import whisper
 import numpy as np
 import json
@@ -15,16 +16,38 @@ import time
 import os
 from pathlib import Path
 import logging
+import warnings
 from typing import Dict, List, Optional, Tuple
 from secure_logging import safe_debug_print
+import threading
 
 logging.basicConfig(level=logging.INFO)
+
+# Suppress noisy warnings for known fallbacks (m4a via audioread, librosa kw rename)
+try:
+    warnings.filterwarnings(
+        "ignore",
+        message=r"get_duration\(\) keyword argument 'filename' has been renamed to 'path'",
+        category=FutureWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"PySoundFile failed. Trying audioread instead.",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"librosa\.core\.audio\.__audioread_load",
+        category=FutureWarning,
+    )
+except Exception:
+    pass
 
 def _load_repr_segment(audio_path: Path, target_sr: int = 16000):
     """代表区間をロード（冒頭静音回避）"""
     try:
+        y, sr = _safe_load_audio(str(audio_path), target_sr=target_sr)
         import librosa as _lib
-        y, sr = _lib.load(str(audio_path), sr=target_sr, mono=True)
         duration = _lib.get_duration(y=y, sr=sr)
         if duration > 180:
             start = int(sr * 60)
@@ -39,6 +62,50 @@ def _load_repr_segment(audio_path: Path, target_sr: int = 16000):
     except Exception as e:
         safe_debug_print(f"repr segment load error: {e}")
         return None, None
+
+def _probe_audio_sr(audio_path: str) -> Optional[int]:
+    try:
+        info = ffmpeg.probe(audio_path)
+        for s in info.get('streams', []):
+            if s.get('codec_type') == 'audio':
+                sr = s.get('sample_rate')
+                if sr:
+                    return int(sr)
+    except Exception:
+        return None
+    return None
+
+def _decode_with_ffmpeg(audio_path: str, target_sr: Optional[int] = None,
+                        offset: Optional[float] = None, duration: Optional[float] = None,
+                        mono: bool = True):
+    """ffmpegで任意の区間をPCM float32でデコード"""
+    try:
+        sr = int(target_sr) if target_sr else (_probe_audio_sr(audio_path) or 16000)
+        i = ffmpeg.input(audio_path, ss=offset if offset else None, t=duration if duration else None)
+        out = i.output('pipe:', format='f32le', ac=(1 if mono else 2), ar=sr)
+        out = out.run(capture_stdout=True, capture_stderr=True, quiet=True)
+        import numpy as _np
+        y = _np.frombuffer(out[0], dtype=_np.float32)
+        if mono:
+            return y, sr
+        # ステレオのときは2chに整形
+        if y.size % 2 == 0:
+            y = y.reshape(-1, 2).mean(axis=1)
+        return y.astype(_np.float32), sr
+    except Exception as e:
+        safe_debug_print(f"ffmpeg decode failed: {e}")
+        return None, None
+
+def _safe_load_audio(audio_path: str, target_sr: Optional[int] = None,
+                     offset: Optional[float] = None, duration: Optional[float] = None):
+    """soundfile/librosaで失敗時にffmpegでデコードして安全に読み込む"""
+    try:
+        import librosa as _lib
+        y, sr = _lib.load(audio_path, sr=target_sr, mono=True, offset=offset or 0.0,
+                          duration=duration if (duration and duration > 0) else None)
+        return y, sr
+    except Exception:
+        return _decode_with_ffmpeg(audio_path, target_sr=target_sr, offset=offset, duration=duration, mono=True)
 
 def _detect_melody_with_crepe(y, sr):
     """CREPEでメロディ検出（任意）"""
@@ -86,7 +153,9 @@ def _infer_instruments_with_panns(audio_path: Path):
         if y is None:
             return []
         at = AudioTagging(checkpoint_path=None, device='cpu')
-        (clipwise_output, labels, _embedding) = at.inference(_np.array(y), sr)
+        # panns_inference.AudioTagging.inference expects audio array only
+        (clipwise_output, _embedding) = at.inference(_np.array(y))
+        labels = getattr(at, 'labels', [])
         scores = clipwise_output[0]
         label_scores = list(zip(labels, scores))
         label_scores.sort(key=lambda x: x[1], reverse=True)
@@ -382,16 +451,23 @@ def extract_audio_features(audio_path: Path) -> Dict:
         return {}
 
 def classify_audio_type(features: Dict, transcription: Optional[Dict]) -> str:
-    """簡易に『music / speech / sfx / ambiguous』を判定（会話とSFXを強めに判定）"""
-    tempo = float(features.get("tempo") or 0)
+    """『music / speech / sfx / ambiguous』を判定。
+    - 歌唱の誤検出（speech扱い）を抑えるため、メロディ指標を強く考慮
+    - 明度（brightness）条件は音楽判定から除外（暗めの楽曲も許容）
+    """
+    # 基本量
+    tempo = float(features.get("tempo_refined", features.get("tempo") or 0))
     beat_count = int(features.get("beat_count") or 0)
-    brightness = float(features.get("brightness_score") or 0)
     duration = float(features.get("duration") or 0)
     transcript = (transcription or {}).get("text", "") if isinstance(transcription, dict) else ""
     transcript_len = len(transcript.strip())
-    word_count = len([w for w in transcript.strip().split() if w])
 
-    # SFX（効果音）を強めに検出: 短尺・低ビート・文字起こしほぼ無し・高ZCR/高スペクトルコントラスト
+    # 音楽性の補助指標
+    has_melody = bool(features.get("has_melody"))
+    tonal_presence = float(features.get("tonal_presence") or 0)
+    chroma_peakiness = float(features.get("chroma_peakiness") or 0)
+
+    # SFX（効果音）強調: 短尺・低ビート・文字起こしほぼ無し・高ZCR/高スペクトルコントラスト
     zcr = float(features.get("zero_crossing_rate") or 0)
     spectral_contrast = float(features.get("spectral_contrast_mean") or 0)
     likely_sfx = (
@@ -402,23 +478,39 @@ def classify_audio_type(features: Dict, transcription: Optional[Dict]) -> str:
     if likely_sfx:
         return "sfx"
 
-    # 楽曲（歌詞あり）優先: 文字起こしが十分でもテンポ/ビートが高ければ音楽扱い
-    if transcript_len >= 15 and ((tempo >= 90) or (beat_count >= 8)) and brightness >= 0.45:
-        return "music"
-
-    # 強い会話判定: 十分な文字起こしがあり、短〜中尺（楽曲条件に当てはまらない）
-    if transcript_len >= 15 and duration <= 60:
+    # 会話優先ロジック：声の存在があり、強い音楽証拠が無い場合は会話
+    voice_present = bool(features.get("voice_present"))
+    perc = float(features.get("percussive_ratio") or 0.0)
+    onset_rate = float(features.get("onset_rate") or 0.0)
+    strong_music = (
+        (has_melody and (tempo >= 100 or beat_count >= 10)) or
+        (tempo >= 110 and beat_count >= 12) or
+        (tonal_presence >= 0.30 and chroma_peakiness >= 0.35)
+    )
+    # バラード/低テンポ歌唱の救済: 歌詞が十分に検出されたら音楽扱いへ寄せる
+    if has_melody and isinstance(transcription, dict):
+        _txt = (transcription.get("text") or "").strip()
+        if len(_txt) >= 20:
+            strong_music = True
+    if voice_present and transcript_len >= 10 and not strong_music:
         return "speech"
 
-    # 音楽判定は厳しく（両条件＋明度）
-    if transcript_len < 10 and tempo >= 90 and beat_count >= 12 and brightness >= 0.55:
+    # 楽曲（歌詞あり）: 音楽証拠が十分
+    if transcript_len >= 12 and strong_music:
         return "music"
 
-    # フォールバック: 文字起こしが皆無で短尺かつビート弱→SFX寄り
+    # 強い会話判定：短〜中尺で文字起こし十分、ビート弱
+    if transcript_len >= 25 and duration <= 90 and (tempo < 95) and (beat_count <= 6):
+        return "speech"
+
+    # 音楽判定（器楽寄り/歌詞少ない）
+    if transcript_len < 10 and tempo >= 90 and beat_count >= 12:
+        return "music"
+
+    # フォールバック：文字起こし皆無で短尺かつビート弱→SFX寄り
     if transcript_len == 0 and duration <= 20 and beat_count <= 2 and tempo < 110:
         return "sfx"
 
-    # それ以外は曖昧
     return "ambiguous"
 
 def features_to_description(features: Dict) -> str:
@@ -799,21 +891,97 @@ def infer_category(features: Dict, instruments: List[str], voice_present: bool) 
 
     return ''
 
-def transcribe_with_whisper(audio_path: Path, model_size: str = "base") -> Optional[Dict]:
+def transcribe_with_whisper(
+    audio_path: Path,
+    model_size: str = "base",
+    max_seconds: Optional[float] = None,
+    offset_seconds: float = 0.0,
+    verbose: Optional[bool] = None
+) -> Optional[Dict]:
     """Whisperで音声を文字起こし"""
     try:
-        safe_debug_print(f"Whisperモデル({model_size})を読み込み中...")
+        safe_debug_print(f"[1/3] Whisperモデル({model_size})を読み込み中...")
         start_time = time.time()
         # キャッシュディレクトリを明示的に指定
         download_root = os.path.expanduser("~/.cache/whisper")
         model = whisper.load_model(model_size, download_root=download_root)
-        safe_debug_print(f"モデル読み込み完了: {time.time() - start_time:.1f}秒")
+        safe_debug_print(f"Whisperモデル読み込み完了: {time.time() - start_time:.1f}秒")
         
-        safe_debug_print(f"音声ファイルを文字起こし中: {audio_path}")
+        safe_debug_print(f"[2/3] 文字起こし開始: {audio_path}")
         start_time = time.time()
         # 言語は自動検出（固定しない）
-        result = model.transcribe(str(audio_path), fp16=False)
-        safe_debug_print(f"文字起こし処理完了: {time.time() - start_time:.1f}秒")
+        # 長尺対策: 指定があれば一部のみを読み込み
+        audio_input = None
+        target_seconds = None
+        if (max_seconds and max_seconds > 0) or (offset_seconds and offset_seconds > 0):
+            y, sr = _safe_load_audio(str(audio_path), target_sr=16000,
+                                     offset=max(0.0, float(offset_seconds or 0.0)),
+                                     duration=max_seconds if (max_seconds and max_seconds > 0) else None)
+            if y is not None:
+                audio_input = y
+                try:
+                    target_seconds = float(len(y)) / float(sr or 16000)
+                except Exception:
+                    target_seconds = None
+                safe_debug_print(f"Whisper入力を部分読込(ffmpeg対応): offset={offset_seconds}s, duration={max_seconds}s, len={len(y)}")
+            else:
+                safe_debug_print("部分読込に失敗。ファイル全体で実行")
+                audio_input = None
+        if target_seconds is None:
+            try:
+                import librosa as _lib
+                target_seconds = float(_lib.get_duration(path=str(audio_path)))
+            except Exception:
+                target_seconds = None
+        # verbose: True でセグメント進捗を標準出力に出す
+        if verbose is None:
+            import os as _os
+            verbose = str(_os.getenv('WHISPER_VERBOSE') or _os.getenv('AUDIO_PROGRESS') or '0').lower() in ('1','true','yes','on')
+        # 進捗/ETAロガー
+        import os as _os
+        show_progress = str(_os.getenv('AUDIO_PROGRESS') or '0').lower() in ('1','true','yes','on')
+        interval = float(_os.getenv('WHISPER_PROGRESS_INTERVAL') or 2.0)
+        rtf_env = _os.getenv('WHISPER_RTF')
+        def _rtf_default(sz: str) -> float:
+            s = (sz or '').lower()
+            if 'tiny' in s: return 0.6
+            if 'base' in s: return 1.0
+            if 'small' in s: return 1.6
+            if 'medium' in s: return 2.5
+            if 'large' in s: return 4.0
+            return 2.0
+        rtf = float(rtf_env) if rtf_env else _rtf_default(model_size)
+        stop_event = None
+        start_ts = time.time()
+        if show_progress and target_seconds and target_seconds > 0:
+            stop_event = threading.Event()
+            def _worker():
+                while not stop_event.is_set():
+                    elapsed = time.time() - start_ts
+                    expected = max(1e-6, target_seconds * rtf)
+                    pct = min(99.0, max(0.0, (elapsed / expected) * 100.0))
+                    eta = max(0.0, expected - elapsed)
+                    mm = int(eta // 60)
+                    ss = int(eta % 60)
+                    safe_debug_print(f"[B] Whisper進捗: {pct:5.1f}% ETA {mm:02d}:{ss:02d}")
+                    stop_event.wait(interval)
+            threading.Thread(target=_worker, daemon=True).start()
+        # 言語/タスクのヒント
+        lang_hint = (_os.getenv('WHISPER_LANGUAGE') or '').strip() or None
+        task_hint = (_os.getenv('WHISPER_TASK') or 'transcribe').strip() or 'transcribe'
+        try:
+            result = model.transcribe(
+                audio_input if audio_input is not None else str(audio_path),
+                fp16=False,
+                verbose=verbose,
+                language=lang_hint,
+                task=task_hint
+            )
+        finally:
+            if stop_event is not None:
+                stop_event.set()
+                safe_debug_print(f"[B] Whisper進捗: 100.0% ETA 00:00")
+        safe_debug_print(f"[3/3] 文字起こし処理完了: {time.time() - start_time:.1f}秒")
         
         # 結果を整形（no_speech_probを保持し、簡易信頼度を算出）
         segments = []
@@ -862,7 +1030,9 @@ def estimate_speaker_gender(features: Dict) -> str:
 def analyze_audio_comprehensive(
     audio_path: Path,
     use_whisper: bool = True,
-    whisper_model: str = "base"
+    whisper_model: str = "base",
+    whisper_max_seconds: Optional[float] = None,
+    whisper_offset_seconds: float = 0.0
 ) -> Dict:
     """音声を総合的に解析"""
     
@@ -878,24 +1048,64 @@ def analyze_audio_comprehensive(
     }
     
     # 1. 音響特徴量を抽出
-    safe_debug_print("音響特徴量を抽出中...")
+    safe_debug_print("[A] 音響特徴量を抽出中...")
+    # 簡易ETA（音声長×係数）
+    feat_stop = None
+    try:
+        import librosa as _lib
+        dur_est = None
+        try:
+            dur_est = float(_lib.get_duration(path=str(audio_path)))
+        except Exception:
+            dur_est = None
+        import os as _os
+        show_progress = str(_os.getenv('AUDIO_PROGRESS') or '0').lower() in ('1','true','yes','on')
+        feat_rtf = float(_os.getenv('FEATURES_RTF') or 0.25)  # 0.25s処理/1s音声 目安
+        interval = float(_os.getenv('FEATURES_PROGRESS_INTERVAL') or 2.0)
+        if show_progress and dur_est and dur_est > 0:
+            stop_event = threading.Event()
+            start_ts = time.time()
+            def _worker():
+                while not stop_event.is_set():
+                    elapsed = time.time() - start_ts
+                    expected = max(1e-6, dur_est * feat_rtf)
+                    pct = min(95.0, max(0.0, (elapsed / expected) * 100.0))
+                    eta = max(0.0, expected - elapsed)
+                    mm = int(eta // 60)
+                    ss = int(eta % 60)
+                    safe_debug_print(f"[A] 特徴量進捗: {pct:5.1f}% ETA {mm:02d}:{ss:02d}")
+                    stop_event.wait(interval)
+            threading.Thread(target=_worker, daemon=True).start()
+            def _stop():
+                stop_event.set()
+                safe_debug_print(f"[A] 特徴量進捗: 100.0% ETA 00:00")
+            feat_stop = _stop
+    except Exception:
+        feat_stop = None
     features = extract_audio_features(audio_path)
+    if feat_stop:
+        try:
+            feat_stop()
+        except Exception:
+            pass
     result["features"] = features
     
     # 2. まずWhisperで音声（声）の有無を推定（オーケストラ誤判定対策として先に実施）
     transcription = None
     if use_whisper:
-        safe_debug_print("Whisperで文字起こし中...")
-        transcription = transcribe_with_whisper(audio_path, whisper_model)
+        safe_debug_print("[B] Whisperで文字起こし中...")
+        transcription = transcribe_with_whisper(
+            audio_path,
+            whisper_model,
+            max_seconds=whisper_max_seconds,
+            offset_seconds=whisper_offset_seconds,
+            verbose=None,
+        )
         if transcription:
             result["transcription"] = transcription
             safe_debug_print(f"文字起こし完了（{len(transcription.get('text',''))}文字）")
 
-    # 3. 種別判定（会話/音楽）
-    audio_type = classify_audio_type(features, result.get("transcription")) if features else "ambiguous"
-    features["audio_type"] = audio_type
-
-    # 3.5 声の有無を推定（Whisper結果とセグメントのno_speech_probから）
+    # 3. 声の有無を推定（Whisper結果とセグメントのno_speech_probから）
     def _estimate_voice_presence(feat: Dict, tr: Optional[Dict]) -> bool:
         if not tr:
             return False
@@ -923,6 +1133,21 @@ def analyze_audio_comprehensive(
 
     voice_present = _estimate_voice_presence(features, result.get("transcription"))
     features["voice_present"] = bool(voice_present)
+
+    # 3.2 種別判定（会話/音楽）— 声の有無を考慮して優先的に会話を識別
+    audio_type = classify_audio_type(features, result.get("transcription")) if features else "ambiguous"
+    # フォールバック：声がはっきりあるのに曖昧/音楽扱いなら会話に寄せる
+    if voice_present and audio_type in ("ambiguous", "music"):
+        # 強い音楽証拠（テンポ・ビート・メロディ）のときのみ音楽を維持
+        tempo = float(features.get("tempo_refined", features.get("tempo") or 0))
+        beat = int(features.get("beat_count") or 0)
+        mel = bool(features.get("has_melody"))
+        # バラード等への配慮: メロディがあり、十分な歌詞があるなら低テンポでも音楽扱い
+        tr_text = ((result.get("transcription") or {}).get("text") or "").strip()
+        strong_music = (mel and (tempo >= 100 or beat >= 10)) or (mel and len(tr_text) >= 20)
+        if not strong_music:
+            audio_type = "speech"
+    features["audio_type"] = audio_type
 
     # CREPEでメロディ補強（任意）
     try:
@@ -956,12 +1181,11 @@ def analyze_audio_comprehensive(
                     desc += f"。長さ: {m}分{s}秒"
                 else:
                     desc += f"。長さ: {s}秒"
-            # 抜粋（信頼度が十分かつ一定以上の長さのみ）
+            # 抜粋（歌詞テキストが存在するなら必ず一部を追加）
             tr = result.get("transcription") or {}
-            conf = tr.get("confidence") or 0.0
             text_full = (tr.get("text") or "").strip()
-            if conf >= 0.6 and len(text_full) >= 20:
-                snippet = text_full[:120].strip()
+            if len(text_full) >= 1:
+                snippet = text_full[:200].strip()
                 if snippet:
                     desc += f"。内容抜粋: 『{snippet}』"
             result["description"] = desc
@@ -970,9 +1194,33 @@ def analyze_audio_comprehensive(
             gender = estimate_speaker_gender(features)
             result["speaker_gender"] = gender
             if gender == "male":
-                result["tags"].extend(["男性声"]) 
+                result["tags"].extend(["男性声"])
             elif gender == "female":
-                result["tags"].extend(["女性声"]) 
+                result["tags"].extend(["女性声"])
+
+            # 付加: 背景に音楽性がある場合はBGM要約を併記（曲の内容も提示）
+            try:
+                has_mel = bool(features.get("has_melody"))
+                tonal = float(features.get("tonal_presence") or 0.0)
+                tempo_ref = float(features.get("tempo_refined", features.get("tempo", 0.0)) or 0.0)
+                if has_mel or tonal >= 0.18 or tempo_ref > 0:
+                    bgm_desc = features_to_description(features)
+                    if bgm_desc:
+                        short_bgm = bgm_desc if len(bgm_desc) <= 140 else (bgm_desc[:140] + "…")
+                        # 楽器/カテゴリの簡易推定を添える
+                        insts = infer_instruments(features)
+                        cat = infer_category(features, insts, voice_present)
+                        if cat:
+                            short_bgm += f"（カテゴリ: {cat}）"
+                        result["description"] += f"。BGM推定: {short_bgm}"
+                        # タグにBGM/楽器/カテゴリを少量追加
+                        if insts:
+                            result["tags"].extend(insts[:3])
+                        if cat:
+                            result["tags"].append(cat)
+                        result["tags"].append("BGM")
+            except Exception:
+                pass
         elif audio_type == "sfx":
             # 効果音向けの説明
             desc = "効果音"
@@ -993,14 +1241,24 @@ def analyze_audio_comprehensive(
             result["description"] = desc
             result["tags"] = generate_tags_from_features(features)
         else:
-            result["description"] = features_to_description(features)
+            # 楽曲解析（Whisperとは分離）
+            music_desc = features_to_description(features)
+            result["music_description"] = music_desc
+            # まずは楽曲解析をキャプションの先頭に据える
+            base_desc = f"楽曲解析: {music_desc}" if music_desc else "楽曲解析"
+            result["description"] = base_desc
             result["tags"] = generate_tags_from_features(features)
             # 楽器推定（ヒューリスティクス）
             insts = infer_instruments(features)
-            # PANNsでの楽器補強（任意）
-            pann_insts = _infer_instruments_with_panns(audio_path)
-            if pann_insts:
-                insts = list(set(insts + pann_insts))
+            # PANNsでの楽器補強（任意・ネットワーク未使用時はスキップ）
+            import os as _os
+            # 既定でPANNsを使用。明示的に DISABLE_PANNS=1 または NO_HF_DOWNLOAD=1 の場合のみスキップ
+            _disable_panns = str(_os.getenv('DISABLE_PANNS') or '').lower() in ('1','true')
+            _skip_panns = _disable_panns or str(_os.getenv('NO_HF_DOWNLOAD') or '').lower() in ('1','true')
+            if not _skip_panns:
+                pann_insts = _infer_instruments_with_panns(audio_path)
+                if pann_insts:
+                    insts = list(set(insts + pann_insts))
             if insts:
                 result.setdefault("instruments", insts)
                 result["tags"].extend(insts)
@@ -1020,13 +1278,17 @@ def analyze_audio_comprehensive(
             if voice_present and vocal_info.get("vocaloid"):
                 result["description"] += "（ボーカロイド風）"
                 result["tags"].extend(["ボーカロイド", "合成音声"]) 
-            # 歌詞があれば補足（楽曲は閾値を緩める）
+            # 歌詞は分離して併記（LLMに渡さない）
             tr = result.get("transcription") or {}
             conf = tr.get("confidence") or 0.0
             text_full = (tr.get("text") or "").strip()
+            if len(text_full) >= 1:
+                snippet = text_full[:200]
+                result["lyrics_snippet"] = snippet
+                result["description"] += f"。歌詞抜粋: 『{snippet}』"
+            # タグ付けは従来通りの閾値で（誤タグを避けるため）
             lyric_threshold = 0.4 if vocal_info.get("vocals") else 0.6
             if conf >= lyric_threshold and len(text_full) >= 12:
-                result["description"] += f" 音声内容: {text_full[:200]}"
                 result["tags"].extend(["歌詞あり", "ボーカル", "vocal"])
             # 歌声の性別は推定しづらいため省略（合成音声は別タグで表示）
             # 楽曲などでも声があれば性別推定
@@ -1037,11 +1299,53 @@ def analyze_audio_comprehensive(
 
             # キャプション補足: メロディ/歌詞/カテゴリ
             melody_flag = "あり" if features.get("has_melody") else "なし"
+            # 歌詞フラグは『(一定長の文字起こし) or (有声/歌声推定)』で一貫させる
+            text_full = (result.get("transcription", {}) or {}).get("text", "")
+            has_text_lyrics = bool(text_full and len(text_full.strip()) >= 12)
             # Whisperの信頼度が低くても音響的に歌声が強い場合は「歌詞:あり」とみなす
-            lyrics_flag = "あり" if (voice_present or vocal_info.get("vocals")) else "なし"
+            lyrics_flag = "あり" if (has_text_lyrics or voice_present or vocal_info.get("vocals")) else "なし"
             if category:
                 result["description"] += f"。カテゴリ: {category}"
             result["description"] += f"。メロディ: {melody_flag}／歌詞: {lyrics_flag}"
+
+        # --- 完全分離: 最後に必ず「楽曲解析」→「歌詞抜粋」の順でキャプションを構成 ---
+        try:
+            # 楽器/カテゴリを再計算（どの分岐でも一定の基準で表示）
+            insts_final = infer_instruments(features)
+            import os as _os
+            _disable_panns = str(_os.getenv('DISABLE_PANNS') or '').lower() in ('1','true')
+            _skip_panns = _disable_panns or str(_os.getenv('NO_HF_DOWNLOAD') or '').lower() in ('1','true')
+            if not _skip_panns:
+                pann_insts = _infer_instruments_with_panns(audio_path)
+                if pann_insts:
+                    for i in pann_insts:
+                        if i not in insts_final:
+                            insts_final.append(i)
+            category_final = infer_category(features, insts_final, bool(features.get('voice_present')))
+
+            music_desc_final = features_to_description(features)
+            result['music_description'] = music_desc_final
+            music_sec = f"楽曲解析: {music_desc_final}" if music_desc_final else "楽曲解析: 音楽的要素は弱い/未検出"
+            if category_final:
+                music_sec += f"（カテゴリ: {category_final}）"
+
+            # 歌詞抜粋（Whisperテキスト）
+            tr = result.get('transcription') or {}
+            snippet = ((tr.get('text') or '').strip())[:200]
+            lyrics_sec = f"歌詞抜粋: 『{snippet}』" if snippet else ""
+
+            # 最終キャプション
+            result['description'] = music_sec + (f"。{lyrics_sec}" if lyrics_sec else "")
+
+            # タグ統合（重複回避）
+            if insts_final:
+                for t in insts_final:
+                    if t not in result['tags']:
+                        result['tags'].append(t)
+            if category_final and category_final not in result['tags']:
+                result['tags'].append(category_final)
+        except Exception:
+            pass
 
         safe_debug_print(f"生成されたタグ: {', '.join(result['tags'][:10])}")
     

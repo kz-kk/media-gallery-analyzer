@@ -216,6 +216,7 @@ def process_video_with_existing_system(video_path: Path, args):
         audio_summary = None
         audio_tags: List[str] = []
         audio_payload: Dict = { "has_audio": False }
+        transcript_text_value = ""
         audio_path = extract_audio_track(video_path)
         if audio_path:
             try:
@@ -226,6 +227,7 @@ def process_video_with_existing_system(video_path: Path, args):
                 feats = audio_result.get('features', {})
                 rms_mean = float(feats.get('rms_mean') or 0.0)
                 transcript_text = ((audio_result.get('transcription') or {}).get('text') or '').strip()
+                transcript_text_value = transcript_text
                 audio_type = feats.get('audio_type') or ('silent' if (rms_mean < 0.005 and not transcript_text) else 'ambiguous')
                 audio_summary = audio_result.get('description')
                 audio_tags = list(set(audio_result.get('tags') or []))
@@ -252,15 +254,21 @@ def process_video_with_existing_system(video_path: Path, args):
         base_caption = f"動画ファイル ({duration_str})"
         frames_caption = " / ".join(all_captions[:3]) if all_captions else ""
         audio_caption_part = ""
-        if audio_payload.get('has_audio') and audio_summary:
-            # 音声の要約を短く追加（長すぎる場合は切り詰め）
-            short_audio = audio_summary
-            if len(short_audio) > 140:
-                short_audio = short_audio[:140] + '…'
-            # 話者性別表記
-            gender = audio_payload.get('speaker_gender') or ''
-            gender_text = "（話者: 男性）" if gender == 'male' else ("（話者: 女性）" if gender == 'female' else '')
-            audio_caption_part = f"音声要約: {short_audio}{gender_text}"
+        if audio_payload.get('has_audio'):
+            # 歌詞抜粋は常に優先して表示（存在する場合）
+            parts = []
+            if transcript_text_value:
+                snippet = transcript_text_value[:120]
+                parts.append(f"歌詞抜粋: 『{snippet}』")
+            if audio_summary:
+                # 歌詞抜粋がある場合は要約を少し短めに
+                limit = 120 if transcript_text_value else 140
+                short_audio = audio_summary if len(audio_summary) <= limit else audio_summary[:limit] + '…'
+                # 話者性別表記
+                gender = audio_payload.get('speaker_gender') or ''
+                gender_text = "（話者: 男性）" if gender == 'male' else ("（話者: 女性）" if gender == 'female' else '')
+                parts.append(f"音声要約: {short_audio}{gender_text}")
+            audio_caption_part = " / ".join(parts)
         parts = [p for p in [base_caption, frames_caption, audio_caption_part] if p]
         combined_caption = " : ".join(parts)
 

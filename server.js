@@ -4,6 +4,27 @@ const http = require('http');
 const crypto = require('crypto');
 const { exec, spawn } = require('child_process');
 
+// --- In-memory progress (SSE) ---
+const progressClients = new Map(); // key: normalized path, value: Set<res>
+const progressState = new Map();   // key: normalized path, value: { featuresPct, whisperPct, message, done }
+
+function normKey(p) {
+  try { return String(p || '').replace(/\\/g, '/'); } catch { return String(p || ''); }
+}
+function pushProgress(filePath, payload) {
+  const key = normKey(filePath);
+  const prev = progressState.get(key) || {};
+  const next = { ...prev, ...payload };
+  progressState.set(key, next);
+  const set = progressClients.get(key);
+  if (set && set.size) {
+    const data = `data: ${JSON.stringify(next)}\n\n`;
+    for (const res of set) {
+      try { res.write(data); } catch (_) {}
+    }
+  }
+}
+
 // シンプルかつクロスプラットフォームなパス検証
 // - Windows でのドライブレター差異（C:\ vs c:\）や先頭スラッシュの扱いを考慮
 // - baseDir を絶対パス化し、relative が '..' で始まらないことを確認
@@ -215,7 +236,7 @@ function analyzeAudioFile(filePath) {
         // v2 のみ追加フラグに対応
         if (/audio_indexer_v2\.py$/i.test(audioScript)) {
             // 明示的に埋め込みモデルを渡す（重いPlamo固定を回避可能）
-            const embModel = process.env.EMB_MODEL || 'sentence-transformers/all-MiniLM-L6-v2';
+            const embModel = process.env.EMB_MODEL || 'pfnet/plamo-embedding-1b';
             args.push('--embedding_model', embModel);
             // v2はWhisper引数に対応
             const noWhisper = (process.env.NO_WHISPER === '1' || String(process.env.NO_WHISPER).toLowerCase() === 'true');
@@ -225,6 +246,13 @@ function analyzeAudioFile(filePath) {
                 // 既定を 'small' に設定、速度と精度のバランスが最適
                 const whisperModel = process.env.WHISPER_MODEL || 'small';
                 args.push('--whisper-model', whisperModel);
+                // 部分文字起こし（長尺対策）
+                if (process.env.WHISPER_MAX_SECONDS) {
+                    args.push('--whisper-max-seconds', String(process.env.WHISPER_MAX_SECONDS));
+                }
+                if (process.env.WHISPER_OFFSET_SECONDS) {
+                    args.push('--whisper-offset-seconds', String(process.env.WHISPER_OFFSET_SECONDS));
+                }
             }
             // v2はLM Studioを使わない（フラグ不要）
         }
@@ -274,6 +302,24 @@ function analyzeAudioFile(filePath) {
             const chunk = data.toString();
             stdout += chunk;
             console.log('[Audio][stdout]', chunk);
+            // Parse progress and broadcast via SSE
+            try {
+                const lines = chunk.split(/\r?\n/);
+                for (const line of lines) {
+                    if (!line) continue;
+                    if (line.includes('[A]') && line.includes('進捗')) {
+                        const m = line.match(/([0-9]+(?:\.[0-9]+)?)%/);
+                        if (m) pushProgress(filePath, { featuresPct: parseFloat(m[1]), message: 'features' });
+                    }
+                    if (line.includes('[B]') && line.includes('Whisper')) {
+                        const m = line.match(/([0-9]+(?:\.[0-9]+)?)%/);
+                        if (m) pushProgress(filePath, { whisperPct: parseFloat(m[1]), message: 'whisper' });
+                    }
+                    if (line.startsWith('AUDIO_ANALYSIS_RESULT: ')) {
+                        pushProgress(filePath, { featuresPct: 100, whisperPct: 100, done: true });
+                    }
+                }
+            } catch (e) {}
         });
         
         child.stderr.on('data', (data) => {
@@ -292,9 +338,11 @@ function analyzeAudioFile(filePath) {
             clearTimeout(timer);
             if (code !== 0) {
                 console.error('Audio analysis script error:', stderr);
+                pushProgress(filePath, { message: 'error', done: true });
                 reject({ error: 'Audio analysis failed', details: stderr });
                 return;
             }
+            pushProgress(filePath, { featuresPct: 100, whisperPct: 100, done: true });
             resolve({ success: true, output: stdout });
         });
         
@@ -1151,7 +1199,7 @@ const server = http.createServer(async (req, res) => {
     }
     
     // 音声解析APIエンドポイント
-    if (req.url === '/api/analyze-audio' && req.method === 'POST') {
+  if (req.url === '/api/analyze-audio' && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => {
             body += chunk.toString();
@@ -1253,6 +1301,45 @@ const server = http.createServer(async (req, res) => {
                 }
             }
         });
+        return;
+    }
+
+    // SSE progress endpoint
+    if (req.url.startsWith('/api/progress') && req.method === 'GET') {
+        try {
+            const urlObj = new URL(req.url, `http://${req.headers.host}`);
+            const filePath = urlObj.searchParams.get('path');
+            if (!filePath) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'path query is required' }));
+                return;
+            }
+            const key = normKey(filePath);
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+            });
+            res.write('\n');
+            // Register client
+            let set = progressClients.get(key);
+            if (!set) { set = new Set(); progressClients.set(key, set); }
+            set.add(res);
+            // Send last state if exists
+            const state = progressState.get(key);
+            if (state) res.write(`data: ${JSON.stringify(state)}\n\n`);
+            // Heartbeat
+            const hb = setInterval(() => { try { res.write(': ping\n\n'); } catch (_) {} }, 15000);
+            // Cleanup
+            req.on('close', () => {
+                clearInterval(hb);
+                const s = progressClients.get(key);
+                if (s) s.delete(res);
+            });
+        } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'failed to open sse' }));
+        }
         return;
     }
 
