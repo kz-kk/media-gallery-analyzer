@@ -109,7 +109,7 @@ When first using the Meilisearch admin interface (http://127.0.0.1:24900), conne
 | `LMSTUDIO_IMAGE_MODE` | data | Image passing mode (data/http) |
 | `MEILI_URL` | http://127.0.0.1:17700 | Meilisearch API URL |
 | `QDRANT_URL` | http://127.0.0.1:26333 | Qdrant API URL |
-| `EMB_MODEL` | all-MiniLM-L6-v2 | Embedding model (Plamo also supported) |
+| `EMB_MODEL` | pfnet/plamo-embedding-1b | Embedding model (Plamo recommended for consistency) |
 | `WHISPER_MODEL` | small | Whisper speech model |
 | `WHISPER_LANGUAGE` | (auto) | Optional language hint for Whisper (e.g., `ja`, `en`) |
 | `WHISPER_FORCE_LANGUAGE` | (unset) | Hard-lock language (e.g., `ja`). Useful when singing confuses detection |
@@ -124,6 +124,21 @@ When first using the Meilisearch admin interface (http://127.0.0.1:24900), conne
 | `AUDIO_INDEXER_SCRIPT` | audio_indexer_v2.py | Audio analysis script |
 | `ID_SCHEME` | rel8 | Media ID scheme (rel8/rel16/abs8) |
 
+#### Advanced ENV (optional)
+- `MEILI_INDEX`: Meilisearch index name (default `media`).
+- `MEILI_MASTER_KEY`: Meilisearch API key (default `masterKey`).
+- `QDRANT_COLLECTION`: Qdrant collection name (default `media_vectors`).
+- `WHISPER_MAX_SECONDS`: Transcribe only the first N seconds.
+- `WHISPER_OFFSET_SECONDS`: Start offset in seconds for Whisper.
+- `AUDIO_TIMEOUT_MS`: Node-side audio analysis timeout in ms (default 180000–480000).
+- `RERANK_MIN_RESULTS` / `RERANK_TOP`: Minimum results and top-K for reranking (default 1 / 50).
+- `QDRANT_THRESHOLD`: Semantic search score threshold (default 0.25).
+- `SERVER_HOST` / `INDEX_HTML_PATH`: Server host / path to `index.html`.
+- `PYTHON_VENV_PATH`: Path to venv Python (e.g., `./venv/bin/python`).
+
+Notes:
+- For stability, keep embeddings unified with Plamo (`pfnet/plamo-embedding-1b`) for both indexing and search. If you switch models, ensure consistency across the stack to avoid Qdrant dimension errors.
+- `EXCLUDE_DIRS` in `.env(.example)` is currently not used by the scanner in `server.js` (`MAX_DEPTH` is effective).
 ### LM Studio Setup
 
 1. Download and install [LM Studio](https://lmstudio.ai/)
@@ -153,9 +168,10 @@ Notes:
 
 ### Supported Formats
 
-- **Images**: JPG, PNG, GIF, BMP, WebP, SVG (SVG is rasterized before analysis)
-- **Videos**: MP4, AVI, MOV, MKV, WebM, M4V, MPG, MPEG
-- **Audio**: MP3, WAV, OGG, FLAC, M4A
+- **Images**: JPG, JPEG, PNG, GIF, WebP, SVG (SVG is rasterized before analysis)
+- **Videos**: MP4, MOV, WebM
+- **Audio**: MP3, WAV
+- **3D Models**: GLB
 
 ## Development
 

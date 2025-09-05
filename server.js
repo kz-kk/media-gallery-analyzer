@@ -494,8 +494,29 @@ async function searchWithQdrant(query, limit = 20) {
                 };
                 const child = spawn(venvPython, args, { stdio: 'pipe', env });
                 let stdout = '', stderr = '';
-                child.stdout.on('data', d => stdout += d.toString());
-                child.stderr.on('data', d => stderr += d.toString());
+                child.stdout.on('data', d => {
+                    const s = d.toString();
+                    stdout += s;
+                    console.log('[model][stdout]', s);
+                    // Progress hook: lines like "MODEL_PROGRESS: <stage>" or "MODEL_PROGRESS: <pct>% <stage>"
+                    try {
+                        const lines = s.split(/\r?\n/);
+                        for (const line of lines) {
+                            if (!line) continue;
+                            if (line.startsWith('MODEL_PROGRESS:')) {
+                                const rest = line.substring('MODEL_PROGRESS:'.length).trim();
+                                // Try to parse percentage
+                                const m = rest.match(/(\d+(?:\.\d+)?)%/);
+                                const pct = m ? parseFloat(m[1]) : undefined;
+                                pushProgress(filePath, { message: rest, ...(pct !== undefined ? { featuresPct: pct } : {}) });
+                            }
+                            if (line.startsWith('MODEL_ANALYSIS_RESULT: ')) {
+                                pushProgress(filePath, { message: 'done', done: true });
+                            }
+                        }
+                    } catch (_) {}
+                });
+                child.stderr.on('data', d => { const s = d.toString(); stderr += s; console.warn('[model][stderr]', s); });
                 child.on('close', code => {
                     if (code !== 0) return reject(new Error(stderr));
                     try {

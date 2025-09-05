@@ -378,7 +378,7 @@ export async function analyzeModelAppearance(filePath, buttonEl = null, mvEl = n
             mediaItem.style.position = 'relative';
             mediaItem.appendChild(overlay);
         }
-        overlay.innerHTML = '<div class="analysis-spinner"></div><div>解析中...</div>';
+        overlay.innerHTML = '<div class="analysis-spinner"></div><div>スナップショット生成中...</div>';
     }
 
     try {
@@ -403,15 +403,19 @@ export async function analyzeModelAppearance(filePath, buttonEl = null, mvEl = n
         mv.src = filePath;
         document.body.appendChild(mv);
         console.log('[ModelAnalyze] created temp viewer');
+        mv.addEventListener('error', (ev) => {
+            try { console.warn('[ModelAnalyze] model-viewer error', ev && ev.detail ? ev.detail : ev); } catch (_) {}
+        });
 
         // load を待つ
         if (createdTemp) {
             await new Promise((resolve) => {
                 let timer = null;
-                const onLoad = () => { if (timer) clearTimeout(timer); mv.removeEventListener('load', onLoad); resolve(); };
-                mv.addEventListener('load', onLoad, { once: true });
-                // safety timeout
-                timer = setTimeout(resolve, 5000);
+                const done = () => { if (timer) clearTimeout(timer); resolve(); };
+                mv.addEventListener('load', done, { once: true });
+                mv.addEventListener('scene-graph-ready', done, { once: true });
+                // 重いGLB対策: safety timeout 20s
+                timer = setTimeout(resolve, 20000);
             });
         }
         // Lit の更新完了を待機（存在する場合）
@@ -420,7 +424,7 @@ export async function analyzeModelAppearance(filePath, buttonEl = null, mvEl = n
         }
         // レンダリング完了までキャンバスサイズをポーリング
         let tries = 0;
-        while (tries < 60) {
+        while (tries < 600) {
             await new Promise(r => requestAnimationFrame(r));
             const canvasProbe = mv.shadowRoot && (mv.shadowRoot.getElementById('webgl-canvas') || mv.shadowRoot.querySelector('canvas'));
             if (canvasProbe && canvasProbe.width > 0 && canvasProbe.height > 0) break;
@@ -443,12 +447,48 @@ export async function analyzeModelAppearance(filePath, buttonEl = null, mvEl = n
                 } catch (err) {
                     console.warn('toDataURL failed:', err);
                 }
+                // サムネイル保存（.snapshots/）も実施する
+                try {
+                    const snapshotBase = `.snapshots/${filePath.replace(/[\\/\\]/g, '_')}`;
+                    const snapshotWebp = `${snapshotBase}.webp`;
+                    const snapshotPng = `${snapshotBase}.png`;
+                    await new Promise((resolve) => {
+                        // まずWebPで試す（軽量）。失敗したらPNG
+                        canvas.toBlob(async (blobWebp) => {
+                            try {
+                                let blob = blobWebp;
+                                let target = snapshotWebp;
+                                if (!blob) {
+                                    canvas.toBlob(async (blobPng) => {
+                                        if (!blobPng) { resolve(); return; }
+                                        const fd2 = new FormData();
+                                        fd2.append('snapshot', blobPng, 'snapshot.png');
+                                        fd2.append('targetPath', snapshotPng);
+                                        await fetch('/api/save-snapshot', { method: 'POST', body: fd2 }).catch(()=>{});
+                                        resolve();
+                                    }, 'image/png');
+                                    return;
+                                }
+                                const fd = new FormData();
+                                fd.append('snapshot', blob, 'snapshot.webp');
+                                fd.append('targetPath', target);
+                                await fetch('/api/save-snapshot', { method: 'POST', body: fd }).catch(()=>{});
+                                resolve();
+                            } catch (_) { resolve(); }
+                        }, 'image/webp', 0.5);
+                    });
+                } catch (e) {
+                    console.warn('[ModelAnalyze] snapshot save failed:', e);
+                }
             }
         } catch (e) {
             console.warn('Snapshot failed:', e);
         }
 
         if (!dataUrl) throw new Error('snapshot-failed');
+
+        // 解析表示に切り替え
+        if (overlay) overlay.innerHTML = '<div class="analysis-spinner"></div><div>解析中...</div>';
 
         const response = await fetch(`${apiBaseUrl}/api/analyze-image-data`, {
             method: 'POST',

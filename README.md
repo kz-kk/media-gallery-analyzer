@@ -144,7 +144,7 @@ Meilisearch管理画面（http://127.0.0.1:24900）を初回利用時は、以�
 | `LMSTUDIO_IMAGE_MODE` | data | 画像の渡し方（data/http）|
 | `MEILI_URL` | http://127.0.0.1:17700 | Meilisearch API URL |
 | `QDRANT_URL` | http://127.0.0.1:26333 | Qdrant API URL |
-| `EMB_MODEL` | all-MiniLM-L6-v2 | 埋め込みモデル（Plamo使用可）|
+| `EMB_MODEL` | pfnet/plamo-embedding-1b | 埋め込みモデル（Plamoで統一推奨）|
 | `WHISPER_MODEL` | small | Whisper音声認識モデル |
 | `WHISPER_LANGUAGE` | (auto) | Whisperへの言語ヒント（例: `ja`, `en`。未設定で自動検出）|
 | `WHISPER_FORCE_LANGUAGE` | (unset) | 言語を完全に固定（例: `ja`）。歌唱で言語誤検出が起きる場合に有効 |
@@ -159,6 +159,21 @@ Meilisearch管理画面（http://127.0.0.1:24900）を初回利用時は、以�
 | `AUDIO_INDEXER_SCRIPT` | audio_indexer_v2.py | 音声解析スクリプト |
 | `ID_SCHEME` | rel8 | メディアID方式（rel8/rel16/abs8）|
 
+#### 上級者向けENV（必要に応じて）
+- `MEILI_INDEX`: Meilisearchのインデックス名（既定 `media`）。
+- `MEILI_MASTER_KEY`: MeilisearchのAPIキー（既定 `masterKey`）。
+- `QDRANT_COLLECTION`: Qdrantのコレクション名（既定 `media_vectors`）。
+- `WHISPER_MAX_SECONDS`: Whisperで先頭N秒のみ解析。
+- `WHISPER_OFFSET_SECONDS`: Whisperの開始オフセット秒。
+- `AUDIO_TIMEOUT_MS`: 音声解析（Node側）のタイムアウトms（既定 180000〜480000）。
+- `RERANK_MIN_RESULTS`/`RERANK_TOP`: Rerankを行う最小件数/上位K（既定 1 / 50）。
+- `QDRANT_THRESHOLD`: セマンティック検索のしきい値（既定 0.25）。
+- `SERVER_HOST`/`INDEX_HTML_PATH`: サーバーホスト/`index.html`パス。
+- `PYTHON_VENV_PATH`: 仮想環境のPythonパス（例 `./venv/bin/python`）。
+
+注記:
+- 埋め込みは Plamo (`pfnet/plamo-embedding-1b`) でインデックス・検索の双方を統一する前提です。別モデルを使う場合は全体で揃えてください（次元不一致でQdrantエラーになります）。
+- `.env(.example)` の `EXCLUDE_DIRS` は現状 `server.js` のスキャンでは未使用です（`MAX_DEPTH` は有効）。
 
 ### LM Studioセットアップ
 
@@ -190,8 +205,8 @@ Meilisearch管理画面（http://127.0.0.1:24900）を初回利用時は、以�
 ### サポートフォーマット
 
 - **画像**: JPG, JPEG, PNG, GIF, SVG, WebP（SVGはラスタライズ後に解析）
-- **動画**: MP4, MOV, AVI, MKV, WebM
-- **音声**: MP3, WAV, OGG, FLAC, M4A
+- **動画**: MP4, MOV, WebM
+- **音声**: MP3, WAV
 - **3Dモデル**: GLB
 
 

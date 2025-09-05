@@ -126,8 +126,12 @@ def main():
         'success': False,
     }
     try:
+        print('MODEL_PROGRESS: start', flush=True)
+        print('MODEL_PROGRESS: reading', flush=True)
         g = read_glb_json(path)
+        print('MODEL_PROGRESS: parsing', flush=True)
         stats = analyze_gltf(g)
+        print('MODEL_PROGRESS: analyzing', flush=True)
         file_size = os.path.getsize(path)
         stats['file_size_bytes'] = file_size
 
@@ -151,6 +155,7 @@ def main():
             'model': 'glb-parser',
             'stats': stats,
         })
+        print('MODEL_PROGRESS: done', flush=True)
     except Exception as e:
         result = {'success': False, 'error': str(e)}
 

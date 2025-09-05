@@ -193,10 +193,15 @@ export function loadMoreMedia(startIndex) {
                     mv.src = file.path;
                     document.body.appendChild(mv);
                     await new Promise((resolve) => {
-                        let to = setTimeout(resolve, 8000);
-                        mv.addEventListener('load', () => { clearTimeout(to); resolve(); }, { once: true });
+                        // 重いGLB対策: 最大30秒まで待機
+                        let to = setTimeout(resolve, 30000);
+                        const done = () => { clearTimeout(to); resolve(); };
+                        mv.addEventListener('load', done, { once: true });
+                        // scene-graph-ready が先に来る場合もある
+                        mv.addEventListener('scene-graph-ready', done, { once: true });
                     });
-                    await new Promise(r => setTimeout(r, 600));
+                    // 初期描画の安定化待ち
+                    await new Promise(r => setTimeout(r, 1200));
                     try {
                         const bigBlob = await mv.toBlob({ mimeType: 'image/png', qualityArgument: 0.85 });
                         if (bigBlob) {
